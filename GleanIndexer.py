@@ -1,100 +1,113 @@
-import logging
+import requests
 import time
+import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union, Optional
+from dateutil import parser as date_parser
 
-import glean_indexing_api_client as indexing_api
-from glean_indexing_api_client.api import (
-    datasources_api,
-    documents_api,
-    permissions_api,
-)
-from glean_indexing_api_client.model.check_document_access_request import (
-    CheckDocumentAccessRequest,
-)
-from glean_indexing_api_client.model.check_document_access_response import (
-    CheckDocumentAccessResponse,
-)
-from glean_indexing_api_client.model.content_definition import ContentDefinition
-from glean_indexing_api_client.model.custom_datasource_config import (
-    CustomDatasourceConfig,
-)
-from glean_indexing_api_client.model.delete_document_request import (
-    DeleteDocumentRequest,
-)
-from glean_indexing_api_client.model.document_definition import DocumentDefinition
-from glean_indexing_api_client.model.document_permissions_definition import (
-    DocumentPermissionsDefinition,
-)
-from glean_indexing_api_client.model.get_datasource_config_request import (
-    GetDatasourceConfigRequest,
-)
-from glean_indexing_api_client.model.get_document_count_request import (
-    GetDocumentCountRequest,
-)
-from glean_indexing_api_client.model.get_document_count_response import (
-    GetDocumentCountResponse,
-)
-from glean_indexing_api_client.model.get_document_status_request import (
-    GetDocumentStatusRequest,
-)
-from glean_indexing_api_client.model.greenlist_users_request import (
-    GreenlistUsersRequest,
-)
-from glean_indexing_api_client.model.index_document_request import IndexDocumentRequest
-from glean_indexing_api_client.model.index_documents_request import (
-    IndexDocumentsRequest,
-)
-from glean_indexing_api_client.model.user_reference_definition import (
-    UserReferenceDefinition,
-)
-from pprint import pprint
-
-# Configure logging (optional). Adjust the logging level as needed.
-logging.basicConfig(level=logging.INFO)
+# Configure logging
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class GleanIndexer:
     """
-    A wrapper class for interacting with the Glean Indexing API.
+    A wrapper class for interacting with the Glean Indexing API using requests.
 
     Attributes:
         api_key (str): The API key (Indexing Token) used for authentication.
-        host (str): The API host URL, typically https://{your-domain}-be.glean.com/api/index/v1.
-        verify_ssl (bool): Whether to verify SSL certificates.
-        client (ApiClient): The configured API client instance for making requests.
+        host (str): The API host URL, typically "https://{your-domain}-be.glean.com/api/index/v1".
+        verify_ssl (bool): Whether SSL certificates should be verified.
+        headers (Dict[str, str]): Default headers used in API requests.
     """
 
     def __init__(self, api_key: str, host: str, verify_ssl: bool = True):
         """
-        Initialize the GleanIndexer with API credentials, host, and SSL verification preference.
+        Initialize the GleanIndexer with API credentials, host URL, and SSL verification preference.
 
         Args:
             api_key (str): The Indexing Token for authentication.
-            host (str): The API host URL. Example: https://{your-domain}-be.glean.com/api/index/v1
-            verify_ssl (bool): Whether to verify SSL certificates. Defaults to True.
+            host (str): The API host URL (e.g., "https://{your-domain}-be.glean.com/api/index/v1").
+            verify_ssl (bool, optional): Whether to verify SSL certificates. Defaults to True.
         """
         self.api_key = api_key
-        self.host = host
+        self.host = host.rstrip("/")  # Remove trailing slash if present
         self.verify_ssl = verify_ssl
-        self.client = self._get_client()
 
-    def _get_client(self) -> indexing_api.ApiClient:
+        # Set common headers for all API requests.
+        self.headers: Dict[str, str] = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _handle_response(self, response: requests.Response) -> Any:
         """
-        Create and configure the Glean API client.
+        Process the HTTP response.
+
+        - Returns the JSON (or text) if the request is successful.
+        - Returns the raw response for a 429 status (so the caller can handle retries).
+        - Raises an exception for other non-200 statuses.
+
+        Args:
+            response (requests.Response): The HTTP response object.
 
         Returns:
-            ApiClient: The configured API client instance.
+            Any: The parsed JSON response or raw text.
         """
-        configuration = indexing_api.Configuration(
-            host=self.host,
-            access_token=self.api_key,
-        )
-        configuration.verify_ssl = self.verify_ssl
-        return indexing_api.ApiClient(configuration)
+        if response.status_code == 429:
+            return response  # Caller handles rate-limit retries
 
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            logger.error("HTTP error occurred: %s", e)
+            raise Exception(f"Request failed with status {response.status_code}: {response.text}") from e
+
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
+
+    @staticmethod
+    def to_epoch(value: Optional[Union[int, str]]) -> int:
+        """
+        Convert a value to epoch seconds.
+
+        Args:
+            value (Optional[Union[int, str]]): An integer (epoch seconds), a date string, or None.
+
+        Returns:
+            int: The value converted to epoch seconds. If None, returns the current time.
+        """
+        if value is None:
+            return int(datetime.now().timestamp())
+        if isinstance(value, int):
+            return value
+        elif isinstance(value, str):
+            dt = date_parser.parse(value)
+            return int(dt.timestamp())
+        else:
+            raise ValueError("Timestamp must be either an integer (epoch) or a valid date string.")
+
+    def _convert_custom_fields(self, custom_fields: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Convert custom fields provided as a dictionary into a list of dictionaries
+        with 'name' and 'value' keys as expected by the API.
+
+        Args:
+            custom_fields (Optional[Dict[str, Any]]): Custom fields as a dictionary.
+
+        Returns:
+            List[Dict[str, Any]]: Custom fields in list format.
+        """
+        if not custom_fields:
+            return []
+        return [{"name": key, "value": str(value)} for key, value in custom_fields.items()]
+
+    # -------------------------------------------------------------------
+    # 1) Create or Update a Data Source
+    # -------------------------------------------------------------------
     def create_datasource(
         self,
         name: str,
@@ -106,119 +119,87 @@ class GleanIndexer:
         test_datasource: bool = True,
     ) -> None:
         """
-        Create a new data source with the specified configuration.
+        Create or update a custom datasource.
 
         Args:
-            name (str): The internal name of the data source.
-            display_name (str): The human-readable name to display in the UI.
-            datasource_category (str): The category of the data source (e.g., 'CRM', 'Finance').
-            url_regex (str): A regex pattern to match the source's URLs for validation.
-            icon_url (str): The URL of the data source's icon.
-            email_users (bool): Indicates if the permissions are assigned via email addresses.
-            test_datasource (bool): Indicates if this data source is for testing.
-
-        Raises:
-            Exception: If there is an error while adding the data source.
+            name (str): Internal name of the datasource.
+            display_name (str): Human-readable name for display.
+            datasource_category (str): Category (e.g., "CRM", "Finance").
+            url_regex (str): Regex pattern for validating URLs.
+            icon_url (str): URL for the datasource icon.
+            email_users (bool, optional): Whether the datasource uses email-based user referencing.
+            test_datasource (bool, optional): Whether the datasource is for testing purposes.
         """
-        ds_api = datasources_api.DatasourcesApi(self.client)
+        endpoint = f"{self.host}/adddatasource"
+        body = {
+            "name": name,
+            "displayName": display_name,
+            "datasourceCategory": datasource_category,
+            "urlRegex": url_regex,
+            "iconUrl": icon_url,
+            "isUserReferencedByEmail": email_users,
+            "isTestDatasource": test_datasource,
+        }
 
-        datasource_config = CustomDatasourceConfig(
-            name=name,
-            display_name=display_name,
-            datasource_category=datasource_category,
-            url_regex=url_regex,
-            icon_url=icon_url,
-            is_user_referenced_by_email=email_users,
-            isTestDatasource=test_datasource,
-        )
+        logger.info("Creating/updating datasource '%s'...", display_name)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        data = self._handle_response(resp)
+        if resp.status_code == 200:
+            logger.info("Datasource '%s' created/updated successfully.", display_name)
+        else:
+            raise Exception(f"Failed to create/update datasource '{display_name}'. Response: {data}")
 
-        try:
-            ds_api.adddatasource_post(datasource_config)
-            logger.info("Datasource '%s' successfully created.", display_name)
-        except indexing_api.ApiException as e:
-            logger.error("Exception creating data source: %s", e)
-            raise Exception(
-                f"Failed to create datasource '{display_name}' due to an API error."
-            ) from e
-        except Exception as general_error:
-            logger.error("Unexpected error creating data source: %s", general_error)
-            raise Exception(
-                f"An unexpected error occurred while creating the datasource '{display_name}'."
-            ) from general_error
-
+    # -------------------------------------------------------------------
+    # 2) Retrieve Datasource Configuration
+    # -------------------------------------------------------------------
     def get_datasource_config(self, datasource_name: str) -> Any:
         """
-        Retrieve the configuration of a specified data source.
+        Retrieve the configuration for a specified datasource.
 
         Args:
-            datasource_name (str): The name of the data source to retrieve configuration for.
-
-        Raises:
-            Exception: If there is an error while fetching the data source configuration.
+            datasource_name (str): Name of the datasource.
 
         Returns:
-            Any: The data source configuration retrieved from the API.
+            Any: Datasource configuration as returned by the API.
         """
-        ds_api = datasources_api.DatasourcesApi(self.client)
-        request = GetDatasourceConfigRequest(datasource=datasource_name)
+        endpoint = f"{self.host}/getdatasourceconfig"
+        body = {"datasource": datasource_name}
 
-        try:
-            api_response = ds_api.getdatasourceconfig_post(request)
-            pprint(
-                api_response
-            )  # For readability; consider removing/using logs for production
-            return api_response
-        except indexing_api.ApiException as e:
-            logger.error("Exception fetching data source config: %s", e)
-            raise Exception(
-                f"Failed to retrieve the configuration for datasource '{datasource_name}' due to an API error."
-            ) from e
-        except Exception as general_error:
-            logger.error(
-                "Unexpected error fetching data source config: %s", general_error
-            )
-            raise Exception(
-                f"An unexpected error occurred while retrieving the configuration for datasource '{datasource_name}'."
-            ) from general_error
+        logger.info("Retrieving config for datasource '%s'...", datasource_name)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        return self._handle_response(resp)
 
+    # -------------------------------------------------------------------
+    # 3) Add Allowed (Beta) Users to a Datasource
+    # -------------------------------------------------------------------
     def add_allowed_users(self, datasource_name: str, emails: List[str]) -> None:
         """
-        Add a list of users to the allowed (greenlist) users for a specified data source.
+        Add allowed (beta) users to a datasource.
 
         Args:
-            datasource_name (str): The name of the data source to which users should be allowed.
-            emails (List[str]): A list of email addresses to allow.
+            datasource_name (str): Name of the datasource.
+            emails (List[str]): List of email addresses to allow.
 
         Raises:
-            Exception: If there is an error while adding the allowed users.
-            ValueError: If no email addresses are provided.
+            ValueError: If the emails list is empty.
         """
         if not emails:
             raise ValueError("At least one email address must be provided.")
 
-        perm_api = permissions_api.PermissionsApi(self.client)
-        greenlist_users_request = GreenlistUsersRequest(
-            datasource=datasource_name, emails=emails
-        )
+        endpoint = f"{self.host}/betausers"
+        body = {"datasource": datasource_name, "emails": emails}
 
-        try:
-            perm_api.betausers_post(greenlist_users_request)
-            logger.info(
-                "Successfully allowed users %s for datasource '%s'.",
-                emails,
-                datasource_name,
-            )
-        except indexing_api.ApiException as e:
-            logger.error("Exception adding allowed users: %s", e)
-            raise Exception(
-                f"Failed to allow users for datasource '{datasource_name}' due to an API error."
-            ) from e
-        except Exception as general_error:
-            logger.error("Unexpected error adding allowed users: %s", general_error)
-            raise Exception(
-                f"An unexpected error occurred while allowing users for datasource '{datasource_name}'."
-            ) from general_error
+        logger.info("Adding allowed users to datasource '%s': %s", datasource_name, emails)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        data = self._handle_response(resp)
+        if resp.status_code == 200:
+            logger.info("Successfully allowed users for datasource '%s'.", datasource_name)
+        else:
+            raise Exception(f"Failed to add allowed users. Response: {data}")
 
+    # -------------------------------------------------------------------
+    # 4) Index a Single Document
+    # -------------------------------------------------------------------
     def index_item(
         self,
         doc_id: str,
@@ -228,146 +209,135 @@ class GleanIndexer:
         url: str,
         description: str = "",
         tags: Optional[List[str]] = None,
-        permissions: Optional[DocumentPermissionsDefinition] = None,
-        created_at: Optional[int] = None,
+        permissions: Optional[Dict[str, Any]] = None,
+        created_at: Optional[Union[int, str]] = None,
+        updated_at: Optional[Union[int, str]] = None,
+        custom_fields: Optional[Dict[str, Any]] = None,
         max_retries: int = 5,
-        **custom_fields: Any,
     ) -> Any:
         """
-        Index a single item (document) to a specified data source with customizable fields.
-        Automatically retries if rate-limited.
+        Index a single document.
+
+        This method sends a document to the /indexdocument endpoint. The payload is built to conform
+        to the API schema. Custom properties are sent using the "customProperties" key as a list.
 
         Args:
             doc_id (str): Unique document ID.
-            name (str): Title of the document.
-            datasource (str): Data source name.
-            object_type (str): The object type for this document.
-            url (str): The URL to view the document.
-            description (str, optional): A text description of the document. Defaults to "".
-            tags (List[str], optional): A list of tags. Defaults to None.
-            permissions (DocumentPermissionsDefinition, optional): Document permissions. Defaults to None.
-            created_at (int, optional): Epoch timestamp for creation date. Defaults to now.
-            max_retries (int, optional): Max number of retries if rate-limited. Defaults to 5.
-            **custom_fields: Additional custom fields to be included in the document.
-                            Ensure these fields are first set up in the Glean UI.
+            name (str): Document title.
+            datasource (str): Datasource name.
+            object_type (str): Object type of the document.
+            url (str): URL for viewing the document.
+            description (str): Document description.
+            tags (Optional[List[str]]): List of tags.
+            permissions (Optional[Dict[str, Any]]): Permissions JSON.
+            created_at (Optional[Union[int, str]]): Creation time (epoch int or date string).
+            updated_at (Optional[Union[int, str]]): Update time (epoch int or date string).
+            custom_fields (Optional[Dict[str, Any]]): Custom properties as a dictionary (e.g.,
+                {"languages": f"{book['languages']}", "bookshelves": f"{book['bookshelves']}"})
+            max_retries (int): Maximum number of retries on rate-limiting.
 
         Returns:
-            Any: The response object after indexing the document.
-
-        Raises:
-            Exception: If an error occurs or if rate limits are exceeded after max retries.
+            Any: Response from the Glean API.
         """
-        doc_api = documents_api.DocumentsApi(self.client)
+        endpoint = f"{self.host}/indexdocument"
         tags = tags or []
-
-        # Default permissions if not provided
         if not permissions:
-            permissions = DocumentPermissionsDefinition(allow_anonymous_access=True)
+            permissions = {"allowAnonymousAccess": True}
 
-        # Default creation timestamp if not provided
-        if not created_at:
-            created_at = int(datetime.now().timestamp())
+        created_at_epoch = self.to_epoch(created_at)
+        updated_at_epoch = self.to_epoch(updated_at)
 
-        current_time_epoch = int(datetime.now().timestamp())
+        # Convert custom_fields dictionary to a list of {name, value} objects.
+        custom_properties = self._convert_custom_fields(custom_fields)
 
-        # Prepare custom properties
-        custom_properties = [
-            {"name": key, "value": value if value is not None else ""}
-            for key, value in custom_fields.items()
-        ]
-
-        request = IndexDocumentRequest(
-            document=DocumentDefinition(
-                datasource=datasource,
-                object_type=object_type,
-                title=name,
-                id=doc_id,
-                created_at=created_at,
-                updated_at=current_time_epoch,
-                tags=tags + [datasource],  # Add datasource name as a tag
-                view_url=url,
-                summary=ContentDefinition(
-                    mime_type="text/html", text_content=description
-                ),
-                custom_properties=custom_properties,
-                permissions=permissions,
-            )
-        )
+        payload = {
+            "document": {
+                "title": name,
+                "datasource": datasource,
+                "objectType": object_type,
+                "viewURL": url,
+                "id": doc_id,
+                "summary": {"mimeType": "text/html", "textContent": description},
+                "createdAt": created_at_epoch,
+                "updatedAt": updated_at_epoch,
+                "tags": tags + [datasource],
+                "customProperties": custom_properties,
+                "permissions": permissions,
+            }
+        }
 
         retries = 0
         while retries <= max_retries:
-            try:
-                response = doc_api.indexdocument_post(request)
-                logger.info("Document '%s' successfully indexed.", doc_id)
-                return response
-            except indexing_api.ApiException as e:
-                if e.status == 429:
-                    # Handle rate limiting
-                    retry_after = e.headers.get("Retry-After")
-                    if retry_after is not None:
-                        wait_time = int(retry_after)
-                        logger.warning(
-                            "Rate limit exceeded. Retrying after %s seconds...",
-                            wait_time,
-                        )
-                        time.sleep(wait_time)
-                        retries += 1
-                        continue
-                    else:
-                        logger.error(
-                            "Rate limit exceeded but 'Retry-After' header is missing."
-                        )
-                        raise Exception(
-                            f"Failed to index document '{doc_id}' due to rate limiting."
-                        ) from e
+            logger.info("Indexing document '%s' (attempt %d/%d)...", doc_id, retries + 1, max_retries)
+            resp = requests.post(endpoint, headers=self.headers, json=payload, verify=self.verify_ssl)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    wait_time = int(retry_after)
+                    logger.warning("Rate limit exceeded. Retrying after %s seconds...", wait_time)
+                    time.sleep(wait_time)
+                    retries += 1
+                    continue
                 else:
-                    logger.error("Exception indexing document: %s", e)
-                    raise Exception(
-                        f"Failed to index document '{doc_id}' due to an API error."
-                    ) from e
+                    raise Exception(f"429 Too Many Requests but no 'Retry-After' header for doc '{doc_id}'.")
+            data = self._handle_response(resp)
+            logger.info("Document '%s' successfully indexed.", doc_id)
+            return data
 
-        raise Exception(
-            f"Failed to index document '{doc_id}' after {max_retries} retries due to rate limiting."
-        )
+        raise Exception(f"Failed to index document '{doc_id}' after {max_retries} retries.")
 
+    # -------------------------------------------------------------------
+    # 5) Index Multiple Documents (Bulk/Incremental)
+    # -------------------------------------------------------------------
     def index_items(
         self,
         items: List[Dict[str, Any]],
         datasource: str,
         upload_id_prefix: str,
+        bulk: bool = False,
+        deleteStale: bool = False,
         max_retries: int = 5,
         batch_size: int = 600,
         post_batch_sleep: float = 15.0,
     ) -> None:
         """
-        Index multiple items (documents) to a specified data source in batches.
+        Index multiple documents in batches.
 
+        Each item in 'items' should be a dictionary with the following keys:
+            - id (str): Required.
+            - name (str): Required.
+            - object_type (str): Required.
+            - url (str): Required.
+            - summary (str): Optional.
+            - body (str): Optional.
+            - tags (List[str]): Optional.
+            - permissions (dict): Optional.
+            - created_at (Union[int, str]): Optional; epoch or date string.
+            - custom_fields (dict): Optional; custom properties as a dictionary.
+        
         Args:
-            items (List[Dict[str, Any]]): A list of item dicts. Each dict must have:
-                'id', 'name', 'object_type', 'url' as required fields.
-                Optional: 'description', 'tags', 'permissions', 'created_at', 'custom_fields'.
-            datasource (str): The data source name.
-            upload_id_prefix (str): Prefix used to generate a unique upload ID per batch.
-            max_retries (int, optional): Maximum number of retries if rate-limited. Defaults to 5.
-            batch_size (int, optional): Number of documents per batch. Defaults to 600.
-            post_batch_sleep (float, optional): Sleep time (in seconds) after a successful batch
-                                                to avoid rate limits. Defaults to 15.0.
-
-        Raises:
-            ValueError: If an item lacks the required fields.
-            Exception: If an API error or rate limit error persists after max retries.
+            items (List[Dict[str, Any]]): List of document items to index.
+            datasource (str): Datasource name.
+            upload_id_prefix (str): Prefix for the unique uploadId.
+            bulk (bool): If True, use the /bulkindexdocuments endpoint (which replaces documents)
+                        and include isFirstPage, isLastPage, and forceRestartUpload flags.
+                        If False (default), use /indexdocuments (incremental indexing).
+            deleteStale (bool) If True, and bulk upload is used, will delete all documents not a part of the bulk upload.
+            max_retries (int): Maximum number of retries on rate-limiting.
+            batch_size (int): Number of documents per batch.
+            post_batch_sleep (float): Sleep time (in seconds) after each batch.
         """
-        doc_api = documents_api.DocumentsApi(self.client)
+        # Choose endpoint based on bulk flag.
+        endpoint = f"{self.host}/bulkindexdocuments" if bulk else f"{self.host}/indexdocuments"
 
-        def chunked(iterable: List[Dict[str, Any]], size: int):
-            """Yield successive n-sized chunks from an iterable."""
-            for i in range(0, len(iterable), size):
-                yield iterable[i : i + size]
+        def chunked(iterable: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
+            """Split the list into chunks of the specified size."""
+            return [iterable[i : i + size] for i in range(0, len(iterable), size)]
 
-        batch_num = 0
+        batches = chunked(items, batch_size)
+        total_batches = len(batches)
 
-        for batch in chunked(items, batch_size):
-            batch_num += 1
+        for batch_num, batch in enumerate(batches, start=1):
             unique_id = uuid.uuid4()
             upload_id = f"{upload_id_prefix}_batch_{batch_num}_{unique_id}"
 
@@ -375,122 +345,110 @@ class GleanIndexer:
             current_time_epoch = int(datetime.now().timestamp())
 
             for item in batch:
-                doc_id = item.get("id")
-                name = item.get("name")
-                object_type = item.get("object_type")
-                url = item.get("url")
+                # Validate required keys.
+                for key in ["id", "name", "object_type", "url"]:
+                    if key not in item:
+                        raise ValueError(f"Each item must have '{key}'.")
 
-                if not all([doc_id, name, object_type, url]):
-                    raise ValueError(
-                        "Each item must have 'id', 'name', 'object_type', and 'url'."
-                    )
-
-                description = item.get("description", "")
+                doc_id = item["id"]
+                name = item["name"]
+                object_type = item["object_type"]
+                url = item["url"]
+                summary = item.get("summary", "")
+                body_text = item.get("body", "")
                 tags = item.get("tags", [])
-                permissions = item.get("permissions") or DocumentPermissionsDefinition(
-                    allow_anonymous_access=True
-                )
-                created_at = item.get("created_at") or current_time_epoch
+                permissions = item.get("permissions") or {"allowAnonymousAccess": True}
+                created_at_epoch = self.to_epoch(item.get("created_at"))
+                updated_at_epoch = current_time_epoch
                 custom_fields = item.get("custom_fields", {})
 
-                # Prepare custom properties
-                custom_props = [
-                    {"name": key, "value": value if value is not None else ""}
-                    for key, value in custom_fields.items()
-                ]
+                # Convert custom_fields from dict to list of {name, value} objects.
+                custom_properties = self._convert_custom_fields(custom_fields)
 
-                document = DocumentDefinition(
-                    datasource=datasource,
-                    object_type=object_type,
-                    title=name,
-                    id=doc_id,
-                    created_at=created_at,
-                    updated_at=current_time_epoch,
-                    tags=tags + [datasource],
-                    view_url=url,
-                    summary=ContentDefinition(
-                        mime_type="text/html", textContent=description
-                    ),
-                    custom_properties=custom_props,
-                    permissions=permissions,
-                )
+                document = {
+                    "title": name,
+                    "datasource": datasource,
+                    "objectType": object_type,
+                    "viewURL": url,
+                    "id": doc_id,
+                    "summary": {"mimeType": "text/html", "textContent": summary},
+                    "body": {"mimeType": "text/html", "textContent": body_text},
+                    "createdAt": created_at_epoch,
+                    "updatedAt": updated_at_epoch,
+                    "tags": tags + [datasource],
+                    "customProperties": custom_properties,
+                    "permissions": permissions,
+                }
                 documents.append(document)
 
-            request = IndexDocumentsRequest(
-                upload_id=upload_id, datasource=datasource, documents=documents
-            )
+            # Build the payload for this batch.
+            batch_body: Dict[str, Any] = {
+                "uploadId": upload_id,
+                "datasource": datasource,
+                "documents": documents,
+                "disableStaleDocumentDeletionCheck": deleteStale
+            }
 
+            # If using the bulk endpoint, add additional paging fields.
+            if bulk:
+                batch_body["isFirstPage"] = (batch_num == 1)
+                batch_body["isLastPage"] = (batch_num == total_batches)
+                # Typically, forceRestartUpload is set on the first batch.
+                if batch_num == 1:
+                    batch_body["forceRestartUpload"] = True
+
+            # Send the request with retry logic.
             retries = 0
             while retries <= max_retries:
-                try:
-                    doc_api.indexdocuments_post(request)
-                    logger.info("Batch %d: Documents successfully indexed.", batch_num)
-                    # Sleep after successful batch to reduce rate-limit risk
-                    time.sleep(post_batch_sleep)
-                    break
-                except indexing_api.ApiException as e:
-                    if e.status == 429:
-                        retry_after = e.headers.get("Retry-After")
-                        if retry_after is not None:
-                            wait_time = int(retry_after)
-                            logger.warning(
-                                "Batch %d: Rate limit exceeded. Retrying in %s seconds...",
-                                batch_num,
-                                wait_time,
-                            )
-                            time.sleep(wait_time)
-                            retries += 1
-                            continue
-                        else:
-                            logger.error(
-                                "Batch %d: Rate limit exceeded but 'Retry-After' header is missing.",
-                                batch_num,
-                            )
-                            raise Exception(
-                                f"Failed to index documents in batch {batch_num} due to rate limiting."
-                            ) from e
-                    else:
-                        logger.error("Exception indexing batch %d: %s", batch_num, e)
-                        raise Exception(
-                            f"Failed to index documents in batch {batch_num} due to an API error."
-                        ) from e
-            else:
-                # Max retries exceeded
-                raise Exception(
-                    f"Failed to index documents in batch {batch_num} after {max_retries} retries due to rate limiting."
+                logger.info(
+                    "Indexing batch %d (uploadId=%s, attempt %d/%d)...",
+                    batch_num,
+                    upload_id,
+                    retries + 1,
+                    max_retries,
                 )
+                resp = requests.post(endpoint, headers=self.headers, json=batch_body, verify=self.verify_ssl)
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        wait_time = int(retry_after)
+                        logger.warning("Rate limit exceeded. Retrying after %s seconds...", wait_time)
+                        time.sleep(wait_time)
+                        retries += 1
+                        continue
+                    else:
+                        raise Exception(f"Rate limit exceeded but no 'Retry-After' header for batch {batch_num}.")
+                _ = self._handle_response(resp)
+                logger.info("Batch %d indexed successfully. Sleeping for %.1f seconds...", batch_num, post_batch_sleep)
+                time.sleep(post_batch_sleep)
+                break
+            else:
+                raise Exception(f"Failed to index batch {batch_num} after {max_retries} retries.")
 
-    def get_document_count(self, datasource_name: str) -> GetDocumentCountResponse:
+    # -------------------------------------------------------------------
+    # 6) Get Document Count
+    # -------------------------------------------------------------------
+    def get_document_count(self, datasource: str) -> int:
         """
-        Retrieve the document count for a specified data source.
+        Retrieve the document count for a given datasource.
 
         Args:
-            datasource_name (str): The name of the data source.
-
-        Raises:
-            Exception: If there is an error while fetching the document count.
+            datasource (str): Name of the datasource.
 
         Returns:
-            GetDocumentCountResponse: The document count data retrieved from the API.
+            int: The document count.
         """
-        doc_api = documents_api.DocumentsApi(self.client)
-        request = GetDocumentCountRequest(datasource=datasource_name)
+        endpoint = f"{self.host}/getdocumentcount"
+        body = {"datasource": datasource}
 
-        try:
-            response = doc_api.getdocumentcount_post(request)
-            pprint(response)
-            return response
-        except indexing_api.ApiException as e:
-            logger.error("Exception fetching document count: %s", e)
-            raise Exception(
-                f"Failed to retrieve the document count for datasource '{datasource_name}' due to an API error."
-            ) from e
-        except Exception as general_error:
-            logger.error("Unexpected error fetching document count: %s", general_error)
-            raise Exception(
-                f"An unexpected error occurred while retrieving the document count for datasource '{datasource_name}'."
-            ) from general_error
+        logger.info("Fetching document count for datasource '%s'...", datasource)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        data = self._handle_response(resp)
+        return data.get("documentCount", 0)
 
+    # -------------------------------------------------------------------
+    # 7) Delete a Document
+    # -------------------------------------------------------------------
     def delete_document(
         self,
         doc_id: str,
@@ -499,65 +457,103 @@ class GleanIndexer:
         is_async: bool = False,
     ) -> None:
         """
-        Delete a document from the specified data source.
+        Delete a document from a datasource.
 
         Args:
-            doc_id (str): The unique document ID.
-            datasource (str): The data source name.
-            object_type (str): The type of object.
-            is_async (bool): Whether to perform the delete call asynchronously. Defaults to False.
-
-        Raises:
-            Exception: If an error occurs during deletion.
+            doc_id (str): Unique document ID.
+            datasource (str): Datasource name.
+            object_type (str): Object type of the document.
+            is_async (bool, optional): Flag indicating asynchronous deletion (for logging only).
         """
-        doc_api = documents_api.DocumentsApi(self.client)
-        request = DeleteDocumentRequest(
-            datasource=datasource, object_type=object_type, id=doc_id
-        )
+        endpoint = f"{self.host}/deletedocument"
+        body = {
+            "datasource": datasource,
+            "objectType": object_type,
+            "id": doc_id,
+        }
 
-        try:
-            doc_api.deletedocument_post(request, async_req=is_async)
-            logger.info(
-                "Document '%s' deletion initiated (async=%s).", doc_id, is_async
-            )
-        except Exception as e:
-            logger.error("Error deleting document '%s': %s", doc_id, e)
-            raise Exception(f"Failed to delete document '{doc_id}'.") from e
+        logger.info("Deleting document '%s' (async=%s)...", doc_id, is_async)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        data = self._handle_response(resp)
+        logger.info("Delete call response: %s", data)
 
+    # -------------------------------------------------------------------
+    # 8) Get Document Status
+    # -------------------------------------------------------------------
     def get_document_status(
-        self, datasource_name: str, object_type: str, doc_id: str
-    ) -> Any:
+        self, datasource: str, object_type: str, doc_id: str
+    ) -> Dict[str, Any]:
         """
-        Retrieve the status of a specific document in a data source.
+        Retrieve the status of a specific document.
 
         Args:
-            datasource_name (str): The name of the data source (e.g., "planhat").
-            object_type (str): The type of object (e.g., "CRM").
-            doc_id (str): The unique document ID.
-
-        Raises:
-            Exception: If there is an error while fetching the document status.
+            datasource (str): Datasource name.
+            object_type (str): Object type of the document.
+            doc_id (str): Unique document ID.
 
         Returns:
-            Any: The document status data retrieved from the API.
+            Dict[str, Any]: Document status information.
         """
-        doc_api = documents_api.DocumentsApi(self.client)
-        request = GetDocumentStatusRequest(
-            datasource=datasource_name, object_type=object_type, doc_id=doc_id
-        )
+        endpoint = f"{self.host}/getdocumentstatus"
+        body = {
+            "datasource": datasource,
+            "objectType": object_type,
+            "docId": doc_id,
+        }
 
-        try:
-            response = doc_api.getdocumentstatus_post(request)
-            pprint(response)
-            return response
-        except indexing_api.ApiException as e:
-            logger.error("Exception fetching document status: %s", e)
-            raise Exception(
-                f"Failed to retrieve the status of document '{doc_id}' from datasource '{datasource_name}'."
-            ) from e
-        except Exception as general_error:
-            logger.error("Unexpected error fetching document status: %s", general_error)
-            raise Exception(
-                f"An unexpected error occurred while retrieving the status of document '{doc_id}' "
-                f"from datasource '{datasource_name}'."
-            ) from general_error
+        logger.info("Fetching document status for doc_id='%s' in datasource '%s'...", doc_id, datasource)
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        return self._handle_response(resp)
+
+    # -------------------------------------------------------------------
+    # 9) Process Documents
+    # -------------------------------------------------------------------
+    def process_documents(self, datasource: Optional[str] = None) -> Any:
+        """
+        Trigger processing of uploaded documents.
+
+        Calls the /processalldocuments endpoint to schedule document processing.
+        If a datasource is specified, only that datasource is processed; otherwise,
+        documents for all datasources are processed.
+
+        Note: This endpoint is rate-limited (typically once per datasource every 3 hours).
+
+        Args:
+            datasource (Optional[str]): Datasource name (optional).
+
+        Returns:
+            Any: Response from the API.
+        """
+        endpoint = f"{self.host}/processalldocuments"
+        body: Dict[str, Any] = {}
+        if datasource:
+            body["datasource"] = datasource
+
+        logger.info("Processing documents%s...",
+                    f" for datasource '{datasource}'" if datasource else " for all datasources")
+        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        return self._handle_response(resp)
+
+    # -------------------------------------------------------------------
+    # 10) Clear Datasource
+    # -------------------------------------------------------------------
+    def clear_datasource(self, datasource: str) -> None:
+        """
+        Clear all documents from a datasource.
+
+        This method performs a bulk indexing operation with an empty list (which deletes
+        all documents in the datasource), then triggers processing for that datasource.
+
+        Args:
+            datasource (str): The datasource to clear.
+        """
+        logger.info("Clearing datasource '%s'...", datasource)
+        self.index_items(
+            items=[],
+            datasource=datasource,
+            upload_id_prefix="clear_ds",
+            bulk=True
+        )
+        logger.info("Triggering processing for datasource '%s'...", datasource)
+        response = self.process_documents(datasource=datasource)
+        logger.info("Process documents response: %s", response)
