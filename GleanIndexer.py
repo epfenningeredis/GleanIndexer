@@ -62,7 +62,9 @@ class GleanIndexer:
             response.raise_for_status()
         except requests.HTTPError as e:
             logger.error("HTTP error occurred: %s", e)
-            raise Exception(f"Request failed with status {response.status_code}: {response.text}") from e
+            raise Exception(
+                f"Request failed with status {response.status_code}: {response.text}"
+            ) from e
 
         try:
             return response.json()
@@ -88,22 +90,16 @@ class GleanIndexer:
             dt = date_parser.parse(value)
             return int(dt.timestamp())
         else:
-            raise ValueError("Timestamp must be either an integer (epoch) or a valid date string.")
+            raise ValueError(
+                "Timestamp must be either an integer (epoch) or a valid date string."
+            )
 
-    def _convert_custom_fields(self, custom_fields: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Convert custom fields provided as a dictionary into a list of dictionaries
-        with 'name' and 'value' keys as expected by the API.
-
-        Args:
-            custom_fields (Optional[Dict[str, Any]]): Custom fields as a dictionary.
-
-        Returns:
-            List[Dict[str, Any]]: Custom fields in list format.
-        """
+    def _convert_custom_fields(
+        self, custom_fields: Optional[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         if not custom_fields:
             return []
-        return [{"name": key, "value": str(value)} for key, value in custom_fields.items()]
+        return [{"name": key, "value": value} for key, value in custom_fields.items()]
 
     # -------------------------------------------------------------------
     # 1) Create or Update a Data Source
@@ -142,12 +138,16 @@ class GleanIndexer:
         }
 
         logger.info("Creating/updating datasource '%s'...", display_name)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         data = self._handle_response(resp)
         if resp.status_code == 200:
             logger.info("Datasource '%s' created/updated successfully.", display_name)
         else:
-            raise Exception(f"Failed to create/update datasource '{display_name}'. Response: {data}")
+            raise Exception(
+                f"Failed to create/update datasource '{display_name}'. Response: {data}"
+            )
 
     # -------------------------------------------------------------------
     # 2) Retrieve Datasource Configuration
@@ -166,7 +166,9 @@ class GleanIndexer:
         body = {"datasource": datasource_name}
 
         logger.info("Retrieving config for datasource '%s'...", datasource_name)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         return self._handle_response(resp)
 
     # -------------------------------------------------------------------
@@ -189,11 +191,17 @@ class GleanIndexer:
         endpoint = f"{self.host}/betausers"
         body = {"datasource": datasource_name, "emails": emails}
 
-        logger.info("Adding allowed users to datasource '%s': %s", datasource_name, emails)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        logger.info(
+            "Adding allowed users to datasource '%s': %s", datasource_name, emails
+        )
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         data = self._handle_response(resp)
         if resp.status_code == 200:
-            logger.info("Successfully allowed users for datasource '%s'.", datasource_name)
+            logger.info(
+                "Successfully allowed users for datasource '%s'.", datasource_name
+            )
         else:
             raise Exception(f"Failed to add allowed users. Response: {data}")
 
@@ -268,23 +276,36 @@ class GleanIndexer:
 
         retries = 0
         while retries <= max_retries:
-            logger.info("Indexing document '%s' (attempt %d/%d)...", doc_id, retries + 1, max_retries)
-            resp = requests.post(endpoint, headers=self.headers, json=payload, verify=self.verify_ssl)
+            logger.info(
+                "Indexing document '%s' (attempt %d/%d)...",
+                doc_id,
+                retries + 1,
+                max_retries,
+            )
+            resp = requests.post(
+                endpoint, headers=self.headers, json=payload, verify=self.verify_ssl
+            )
             if resp.status_code == 429:
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after:
                     wait_time = int(retry_after)
-                    logger.warning("Rate limit exceeded. Retrying after %s seconds...", wait_time)
+                    logger.warning(
+                        "Rate limit exceeded. Retrying after %s seconds...", wait_time
+                    )
                     time.sleep(wait_time)
                     retries += 1
                     continue
                 else:
-                    raise Exception(f"429 Too Many Requests but no 'Retry-After' header for doc '{doc_id}'.")
+                    raise Exception(
+                        f"429 Too Many Requests but no 'Retry-After' header for doc '{doc_id}'."
+                    )
             data = self._handle_response(resp)
             logger.info("Document '%s' successfully indexed.", doc_id)
             return data
 
-        raise Exception(f"Failed to index document '{doc_id}' after {max_retries} retries.")
+        raise Exception(
+            f"Failed to index document '{doc_id}' after {max_retries} retries."
+        )
 
     # -------------------------------------------------------------------
     # 5) Index Multiple Documents (Bulk/Incremental)
@@ -314,7 +335,7 @@ class GleanIndexer:
             - permissions (dict): Optional.
             - created_at (Union[int, str]): Optional; epoch or date string.
             - custom_fields (dict): Optional; custom properties as a dictionary.
-        
+
         Args:
             items (List[Dict[str, Any]]): List of document items to index.
             datasource (str): Datasource name.
@@ -328,18 +349,22 @@ class GleanIndexer:
             post_batch_sleep (float): Sleep time (in seconds) after each batch.
         """
         # Choose endpoint based on bulk flag.
-        endpoint = f"{self.host}/bulkindexdocuments" if bulk else f"{self.host}/indexdocuments"
+        endpoint = (
+            f"{self.host}/bulkindexdocuments" if bulk else f"{self.host}/indexdocuments"
+        )
 
-        def chunked(iterable: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
+        def chunked(
+            iterable: List[Dict[str, Any]], size: int
+        ) -> List[List[Dict[str, Any]]]:
             """Split the list into chunks of the specified size."""
             return [iterable[i : i + size] for i in range(0, len(iterable), size)]
 
         batches = chunked(items, batch_size)
         total_batches = len(batches)
 
+        upload_id = f"{upload_id_prefix}_{uuid.uuid4()}" if bulk else None
+
         for batch_num, batch in enumerate(batches, start=1):
-            unique_id = uuid.uuid4()
-            upload_id = f"{upload_id_prefix}_batch_{batch_num}_{unique_id}"
 
             documents = []
             current_time_epoch = int(datetime.now().timestamp())
@@ -383,19 +408,21 @@ class GleanIndexer:
 
             # Build the payload for this batch.
             batch_body: Dict[str, Any] = {
-                "uploadId": upload_id,
                 "datasource": datasource,
                 "documents": documents,
-                "disableStaleDocumentDeletionCheck": deleteStale
             }
 
             # If using the bulk endpoint, add additional paging fields.
             if bulk:
-                batch_body["isFirstPage"] = (batch_num == 1)
-                batch_body["isLastPage"] = (batch_num == total_batches)
-                # Typically, forceRestartUpload is set on the first batch.
-                if batch_num == 1:
+                is_first = batch_num == 1
+                is_last = batch_num == total_batches
+                batch_body["uploadId"] = upload_id
+                batch_body["isFirstPage"] = is_first
+                batch_body["isLastPage"] = is_last
+                if is_first:
                     batch_body["forceRestartUpload"] = True
+                if is_last and deleteStale:
+                    batch_body["deleteStale"] = True
 
             # Send the request with retry logic.
             retries = 0
@@ -407,23 +434,39 @@ class GleanIndexer:
                     retries + 1,
                     max_retries,
                 )
-                resp = requests.post(endpoint, headers=self.headers, json=batch_body, verify=self.verify_ssl)
+                resp = requests.post(
+                    endpoint,
+                    headers=self.headers,
+                    json=batch_body,
+                    verify=self.verify_ssl,
+                )
                 if resp.status_code == 429:
                     retry_after = resp.headers.get("Retry-After")
                     if retry_after:
                         wait_time = int(retry_after)
-                        logger.warning("Rate limit exceeded. Retrying after %s seconds...", wait_time)
+                        logger.warning(
+                            "Rate limit exceeded. Retrying after %s seconds...",
+                            wait_time,
+                        )
                         time.sleep(wait_time)
                         retries += 1
                         continue
                     else:
-                        raise Exception(f"Rate limit exceeded but no 'Retry-After' header for batch {batch_num}.")
+                        raise Exception(
+                            f"Rate limit exceeded but no 'Retry-After' header for batch {batch_num}."
+                        )
                 _ = self._handle_response(resp)
-                logger.info("Batch %d indexed successfully. Sleeping for %.1f seconds...", batch_num, post_batch_sleep)
+                logger.info(
+                    "Batch %d indexed successfully. Sleeping for %.1f seconds...",
+                    batch_num,
+                    post_batch_sleep,
+                )
                 time.sleep(post_batch_sleep)
                 break
             else:
-                raise Exception(f"Failed to index batch {batch_num} after {max_retries} retries.")
+                raise Exception(
+                    f"Failed to index batch {batch_num} after {max_retries} retries."
+                )
 
     # -------------------------------------------------------------------
     # 6) Get Document Count
@@ -442,7 +485,9 @@ class GleanIndexer:
         body = {"datasource": datasource}
 
         logger.info("Fetching document count for datasource '%s'...", datasource)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         data = self._handle_response(resp)
         return data.get("documentCount", 0)
 
@@ -473,7 +518,9 @@ class GleanIndexer:
         }
 
         logger.info("Deleting document '%s' (async=%s)...", doc_id, is_async)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         data = self._handle_response(resp)
         logger.info("Delete call response: %s", data)
 
@@ -501,8 +548,14 @@ class GleanIndexer:
             "docId": doc_id,
         }
 
-        logger.info("Fetching document status for doc_id='%s' in datasource '%s'...", doc_id, datasource)
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        logger.info(
+            "Fetching document status for doc_id='%s' in datasource '%s'...",
+            doc_id,
+            datasource,
+        )
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         return self._handle_response(resp)
 
     # -------------------------------------------------------------------
@@ -529,9 +582,13 @@ class GleanIndexer:
         if datasource:
             body["datasource"] = datasource
 
-        logger.info("Processing documents%s...",
-                    f" for datasource '{datasource}'" if datasource else " for all datasources")
-        resp = requests.post(endpoint, headers=self.headers, json=body, verify=self.verify_ssl)
+        logger.info(
+            "Processing documents%s...",
+            f" for datasource '{datasource}'" if datasource else " for all datasources",
+        )
+        resp = requests.post(
+            endpoint, headers=self.headers, json=body, verify=self.verify_ssl
+        )
         return self._handle_response(resp)
 
     # -------------------------------------------------------------------
@@ -549,10 +606,7 @@ class GleanIndexer:
         """
         logger.info("Clearing datasource '%s'...", datasource)
         self.index_items(
-            items=[],
-            datasource=datasource,
-            upload_id_prefix="clear_ds",
-            bulk=True
+            items=[], datasource=datasource, upload_id_prefix="clear_ds", bulk=True
         )
         logger.info("Triggering processing for datasource '%s'...", datasource)
         response = self.process_documents(datasource=datasource)
