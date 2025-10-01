@@ -37,12 +37,24 @@ indexer.create_datasource(name="my_ds", display_name="My DS", datasource_categor
 
 Index a single document:
 ````python
-indexer.index_item(doc_id="doc-1", name="Sample Doc", datasource="my_ds", object_type="my_object", url="https://example.com/doc-1", description="Hello world")
+indexer.index_item(
+  doc_id="doc-1",
+  name="Sample Doc",
+  datasource="my_ds",
+  object_type="my_object",
+  url="https://example.com/doc-1",
+  description="Hello world",
+  # Pass custom fields as a dict; the client converts this to Glean's customProperties list
+  custom_fields={"category":"internal","priority":"p1"}
+)
 ````
 
 Batch index multiple documents (incremental by default):
 ````python
-items = [{"id":"1","name":"Doc 1","object_type":"obj","url":"https://example.com/1"}, {"id":"2","name":"Doc 2","object_type":"obj","url":"https://example.com/2"}]
+items = [
+  {"id":"1","name":"Doc 1","object_type":"obj","url":"https://example.com/1","summary":"Hello 1","custom_fields":{"category":"internal"}},
+  {"id":"2","name":"Doc 2","object_type":"obj","url":"https://example.com/2","summary":"Hello 2","custom_fields":{"category":"internal"}}
+]
 indexer.index_items(items=items, datasource="my_ds", upload_id_prefix="my_upload")
 ````
 
@@ -97,6 +109,20 @@ indexer.index_items(items=items, datasource="my_ds", upload_id_prefix="my_upload
 ### Document Schema Notes
 - Required per document: `id`, `name`, `object_type`, `url`
 - Optional: `summary` (HTML), `body` (HTML), `tags` (list), `permissions` (dict), `created_at`
+### Custom fields vs. customProperties
+- In this client, you set custom fields using the Python argument `custom_fields` (a dict).
+- Under the hood, the client converts `custom_fields` into Glean's `customProperties` list of `{name, value}` pairs.
+
+Example conversion (conceptual):
+````python
+custom_fields = {"category": "internal", "priority": "p1"}
+# becomes
+customProperties = [
+  {"name": "category", "value": "internal"},
+  {"name": "priority", "value": "p1"}
+]
+````
+
 - `custom_fields`: supply as a dict (`{"field": "value"}`); it is converted to the API’s `[{"name":..., "value":...}]` shape.
 - Permissions default to `{"allowAnonymousAccess": True}` if not provided; set appropriate ACLs for your use case.
 
