@@ -58,9 +58,31 @@ items = [
 indexer.index_items(items=items, datasource="my_ds", upload_id_prefix="my_upload")
 ````
 
-For bulk replacement (with optional deletion of stale docs):
+### Bulk mode and stale documents
+
+- Incremental (default) mode uses the indexdocuments endpoint and applies adds/updates without removing documents you don’t explicitly delete.
+- Bulk mode (bulkindexdocuments) is snapshot-style: the set of documents you upload in a bulk session becomes the entire datasource once the upload completes.
+  - The client automatically sets uploadId, isFirstPage, isLastPage, and forceRestartUpload (on the first page) for you when bulk=True.
+- deleteStale controls what happens to documents that exist in the datasource but are not present in your bulk snapshot:
+  - If deleteStale=True on the last page, Glean deletes any documents missing from the snapshot at the end of the upload (destructive operation).
+  - If deleteStale=False (default), Glean may keep “stale” documents for a long grace period. In particular, Glean enforces a long deletion waiting period when a bulk upload does not include at least 20% of what currently exists in the datasource.
+
+Recommended usage:
+- Use bulk=True when you want the datasource to exactly match your input set (a full refresh/snapshot). Combine with deleteStale=True if you want anything not in the snapshot to be removed immediately.
+- For routine incremental adds/updates without mass removal, keep bulk=False.
+- Consider off-hours runs and tune batch_size and post_batch_sleep to avoid 429 rate limits.
+
+Annotated example (full refresh with immediate removal of missing docs):
 ````python
-indexer.index_items(items=items, datasource="my_ds", upload_id_prefix="my_upload", bulk=True, deleteStale=True)
+indexer.index_items(
+  items=items,                       # the complete snapshot for this datasource
+  datasource="my_ds",
+  upload_id_prefix="snapshot_2025_10_01",
+  bulk=True,                         # use bulk replacement mode
+  deleteStale=True,                  # immediately delete docs not in this snapshot
+  batch_size=500,
+  post_batch_sleep=10.0
+)
 ````
 
 ---
