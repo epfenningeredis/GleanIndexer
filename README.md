@@ -125,11 +125,9 @@ Basic logging is configured at INFO level. You can adjust by configuring Pythonâ
 There is a minimal example script in this repo you can adapt.
 
 Run it directly after filling in your credentials and values:
-<augment_code_snippet mode="EXCERPT" path="example.py">
 ````bash
 python example.py
 ````
-</augment_code_snippet>
 
 Note: If you import directly from this repository without packaging, use `from GleanIndexer import GleanIndexer`.
 
