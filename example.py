@@ -3,7 +3,7 @@ Example usage script for interacting with the Glean Indexing API via the GleanIn
 """
 
 import logging
-from glean_indexer import GleanIndexer  # Ensure this is the correct import path
+from GleanIndexer import GleanIndexer  # Import from this repo's module file
 
 # Optional: Configure logging here or in glean_indexer.py
 logging.basicConfig(level=logging.INFO)
@@ -57,11 +57,13 @@ def main():
             datasource="my_datasource_internal_name",
             object_type="my_object_type",
             url="https://example.com/my_doc",
-            description="A sample description for the doc.",
+            description="A sample description for the doc.",  # becomes document.summary
             tags=["tag1", "tag2"],
-            # Optional: You can specify custom fields if defined in Glean
-            custom_field1="Custom Value 1",
-            custom_field2="Custom Value 2"
+            # Provide custom fields as a dict; they will be converted to customProperties
+            custom_fields={
+                "custom_field1": "Custom Value 1",
+                "custom_field2": "Custom Value 2"
+            }
         )
         logger.info("Index single doc response: %s", index_response)
     except Exception as e:
@@ -76,7 +78,7 @@ def main():
             "name": "Multiple Doc 1",
             "object_type": "object_type_1",
             "url": "https://example.com/doc1",
-            "description": "Description for doc 1",
+            "summary": "Summary for doc 1",
             "tags": ["batch", "example"],
             "custom_fields": {
                 "my_custom_field": "Custom Value 1"
@@ -87,7 +89,7 @@ def main():
             "name": "Multiple Doc 2",
             "object_type": "object_type_1",
             "url": "https://example.com/doc2",
-            "description": "Description for doc 2",
+            "summary": "Summary for doc 2",
             "tags": ["batch", "example2"],
             "custom_fields": {
                 "another_custom_field": "Custom Value 2"
@@ -117,7 +119,7 @@ def main():
     # 8. Check the status of a document
     try:
         doc_status_resp = glean_indexer.get_document_status(
-            datasource_name="my_datasource_internal_name",
+            datasource="my_datasource_internal_name",
             object_type="my_object_type",
             doc_id="unique_doc_id_123"
         )
