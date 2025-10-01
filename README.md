@@ -34,10 +34,8 @@ from GleanIndexer import GleanIndexer
 indexer = GleanIndexer(api_key="YOUR_INDEXING_TOKEN", host="https://your-domain-be.glean.com/api/index/v1")
 indexer.create_datasource(name="my_ds", display_name="My DS", datasource_category="CRM", url_regex=r"https://example\\.com/.*", icon_url="https://example.com/icon.png")
 ````
-</augment_code_snippet>
 
 Index a single document:
-<augment_code_snippet mode="EXCERPT">
 ````python
 indexer.index_item(doc_id="doc-1", name="Sample Doc", datasource="my_ds", object_type="my_object", url="https://example.com/doc-1", description="Hello world")
 ````
